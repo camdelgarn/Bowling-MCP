@@ -1,0 +1,32 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Video files (too large for GitHub)
+video/
+*.MP4
+*.mp4
+*.avi
+*.mov
+
+# RTMP server binaries
+rtmp/nginx.exe
+rtmp/logs/
+rtmp/temp/
+
+# Large output images
+*.png
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+detailed.log
