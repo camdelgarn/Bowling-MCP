@@ -1,12 +1,13 @@
 {
-  "video": "1.MP4",
+  "video": "GX010023.MP4",
   "frame_width": 5312,
   "frame_height": 2988,
   "foul_line_y": 1350,
-  "left_edge_slope": -0.5131951625230409,
-  "left_edge_intercept": 3211.0484796715064,
-  "right_edge_slope": 0.4855560051351987,
-  "right_edge_intercept": 2389.090420456872,
-  "empty_frame_idx": 770,
+  "left_edge_slope": -0.2888585793752647,
+  "left_edge_intercept": 2550.331996148906,
+  "right_edge_slope": 0.058260289904407535,
+  "right_edge_intercept": 2570.062943579268,
+  "empty_frame_idx": 2364,
+  "lane_hint_x": 2368,
   "notes": "Board 0=right edge, Board 40=left edge. x = slope*y + intercept"
 }

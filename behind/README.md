@@ -41,7 +41,11 @@ options:
   --foul-y N              Foul line Y coordinate in pixels (default: 1350)
   --calibration FILE      Path to lane_calibration.json to skip calibration
   --output FILE           Output JSON path (default: bowler_tracking.json)
+  --scale FACTOR          Downscale factor for processing (default: 0.25)
+  --skip N                Process every Nth frame (default: 3)
 ```
+
+By default, frames are downscaled to 25% and only every 3rd frame is processed, making it ~48x faster than full resolution. Use `--scale 1.0 --skip 1` for maximum accuracy.
 
 **Example output:**
 ```
