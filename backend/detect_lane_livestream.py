@@ -21,11 +21,20 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
 import sys
 import os
+import json
 
 RTMP_URL = "rtmp://192.168.1.7:1935/live/stream"
-BOARDS_PER_LANE = 39
-DOTS_SPACING_BOARDS = 5  # boards between each dot
-CENTER_DOT_BOARD = 20    # center dot is at board 20
+
+# Load lane configuration from lane_config.json (see LANE_CONFIG.md for docs)
+_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lane_config.json")
+with open(_config_path) as _f:
+    LANE_CONFIG = json.load(_f)
+
+BOARDS_PER_LANE = LANE_CONFIG["boards_per_lane"]
+DOTS_SPACING_BOARDS = LANE_CONFIG["dot_spacing_boards"]
+CENTER_DOT_BOARD = LANE_CONFIG["center_dot_board"]
+EXPECTED_DOT_COUNT = LANE_CONFIG["dot_count"]
+BOWLER_HANDEDNESS = LANE_CONFIG.get("bowler_handedness", "right")
 
 
 def capture_frame(url: str) -> np.ndarray:

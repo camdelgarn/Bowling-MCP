@@ -1,0 +1,14 @@
+{
+  "boards_per_lane": 39,
+  "dot_count": 5,
+  "dot_spacing_boards": 5,
+  "center_dot_board": 20,
+  "dot_boards": [10, 15, 20, 25, 30],
+  "bowler_handedness": "right",
+  "_comments": {
+    "dot_count": "5 for 5-dot houses, 7 for 7-dot houses",
+    "dot_boards_5": "[10, 15, 20, 25, 30]",
+    "dot_boards_7": "[5, 10, 15, 20, 25, 30, 35]",
+    "bowler_handedness": "right or left — controls board numbering direction"
+  }
+}

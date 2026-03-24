@@ -2,12 +2,19 @@
 import cv2
 import sys
 import json
+import os
 import numpy as np
 
 sys.path.insert(0, r"C:\Development\Bowling-MCP\backend")
 
 VIDEO = r"C:\video\behind\GX010014.MP4"
 OUT = r"C:\Development\Bowling-MCP\backend"
+
+# Load lane config (see LANE_CONFIG.md)
+with open(os.path.join(OUT, "lane_config.json")) as f:
+    lane_cfg = json.load(f)
+BOARDS_PER_LANE = lane_cfg["boards_per_lane"]
+BOWLER_HANDEDNESS = lane_cfg.get("bowler_handedness", "right")
 
 # Load calibration
 with open(f"{OUT}/bowler_calibration.json") as f:
@@ -37,7 +44,8 @@ def px_per_board_at(y):
 
 def find_bowler_feet(frame_gray, ref_gray):
     diff = cv2.absdiff(frame_gray, ref_gray)
-    y_top, y_bot = 650, 1000
+    # y_top should be above the foul line (first dot row ~676, foul line above that)
+    y_top, y_bot = 550, 1000
     roi = diff[y_top:y_bot, :]
     _, mask = cv2.threshold(roi.astype(np.uint8), 25, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -63,8 +71,14 @@ def find_bowler_feet(frame_gray, ref_gray):
     else:
         foot_x = bx + bw // 2
     left_x = np.polyval(left_coeffs, foot_y)
+    right_x = np.polyval(right_coeffs, foot_y)
     ppb = px_per_board_at(foot_y)
-    board = (foot_x - left_x) / ppb
+    if BOWLER_HANDEDNESS == "right":
+        # Board 1 = right gutter edge, board 39 = left gutter edge
+        board = (right_x - foot_x) / ppb
+    else:
+        # Board 1 = left gutter edge, board 39 = right gutter edge
+        board = (foot_x - left_x) / ppb
     return {
         "foot_x": int(foot_x), "foot_y": int(foot_y),
         "board": round(float(board), 1), "area": int(area),
