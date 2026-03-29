@@ -22,6 +22,8 @@ rtmp/temp/
 
 # Large output images
 *.png
+*.jpg
+*.jpeg
 
 # OS
 Thumbs.db
