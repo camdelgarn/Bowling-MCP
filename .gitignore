@@ -2,11 +2,18 @@
 .venv/
 venv/
 env/
+.python-version
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Video files (too large for GitHub)
 video/
@@ -14,14 +21,31 @@ video/
 *.mp4
 *.avi
 *.mov
+*.mkv
 
 # RTMP server binaries
 rtmp/nginx.exe
 rtmp/logs/
 rtmp/temp/
 
-# Large output images
+# Generated output images/videos and prediction artifacts
 *.png
+*.jpg
+*.jpeg
+backend/frames/
+backend/outputs/
+behind/run_output.txt
+yolo/outputs/
+yolo/runs/
+**/labels/
+**/runs/
+
+# YOLO and model artifacts
+*.pt
+*.onnx
+*.engine
+*.torchscript
+*.weights
 
 # OS
 Thumbs.db
@@ -30,3 +54,10 @@ Desktop.ini
 # Logs
 *.log
 detailed.log
+
+# Editor and local env files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.env
+.env.*
