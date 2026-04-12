@@ -96,25 +96,101 @@ def find_pause_window(
     return None, None
 
 
-def detect_step_frames(rows: List[Dict], start_frame: int, speed_thresh: float, min_gap_frames: int) -> List[int]:
-    series = [r for r in rows if r["frame"] >= start_frame and r["foot_speed"] is not None]
-    if len(series) < 3:
-        return []
+def _mad_thresh(rows: List[Dict], start_frame: int, speed_key: str, floor: float, k: float) -> float:
+    """median + k*1.4826*MAD threshold over a single ankle speed series.
 
-    step_frames: List[int] = []
-    last_step = -10**9
+    Self-calibrates for bowler speed, camera distance, and frame rate.
+    MAD is robust to the extreme delivery-slide spikes that inflate std.
+    """
+    speeds = sorted(
+        float(r[speed_key])
+        for r in rows
+        if r["frame"] >= start_frame and r.get(speed_key) is not None
+    )
+    if len(speeds) < 5:
+        return floor
+    mid = len(speeds) // 2
+    median = speeds[mid]
+    mad = sorted(abs(s - median) for s in speeds)[mid]
+    return max(floor, median + k * 1.4826 * mad)
+
+
+def adaptive_speed_thresh(rows: List[Dict], start_frame: int, floor: float, k: float = 3.5) -> float:
+    """Adaptive threshold using the combined foot midpoint speed (kept as fallback)."""
+    return _mad_thresh(rows, start_frame, "foot_speed", floor, k)
+
+
+def _peak_frames(series: List[Dict], speed_key: str, thresh: float, min_gap: int) -> List[int]:
+    """Find local-peak frames in one ankle speed series above thresh."""
+    peaks: List[int] = []
+    last = -(10 ** 9)
     for i in range(1, len(series) - 1):
-        prev_s = float(series[i - 1]["foot_speed"])
-        curr_s = float(series[i]["foot_speed"])
-        next_s = float(series[i + 1]["foot_speed"])
+        p = series[i - 1].get(speed_key)
+        c = series[i].get(speed_key)
+        n = series[i + 1].get(speed_key)
+        if p is None or c is None or n is None:
+            continue
         frame = int(series[i]["frame"])
+        if float(c) >= thresh and float(c) >= float(p) and float(c) >= float(n):
+            if frame - last >= min_gap:
+                peaks.append(frame)
+                last = frame
+    return peaks
 
-        is_peak = curr_s >= speed_thresh and curr_s >= prev_s and curr_s >= next_s
-        if is_peak and (frame - last_step) >= min_gap_frames:
-            step_frames.append(frame)
-            last_step = frame
 
-    return step_frames
+def detect_steps_alternating(
+    rows: List[Dict],
+    start_frame: int,
+    l_thresh: float,
+    r_thresh: float,
+    min_gap_frames: int,
+    min_alt_step_spacing_frames: int,
+    first_foot: str,
+    expected_steps: int,
+) -> Tuple[List[int], List[str]]:
+    """Detect approach steps as alternating per-ankle speed peaks.
+
+    Right-handed bowler: L-R-L-R-L  (first_foot='left')
+    Left-handed bowler:  R-L-R-L-R  (first_foot='right')
+
+    Returns parallel lists of step frame numbers and which foot ('left'/'right').
+    """
+    series = [r for r in rows if r["frame"] >= start_frame]
+
+    l_peaks = _peak_frames(series, "left_ankle_speed", l_thresh, min_gap_frames)
+    r_peaks = _peak_frames(series, "right_ankle_speed", r_thresh, min_gap_frames)
+
+    foot_order = [
+        ("left" if i % 2 == 0 else "right") if first_foot == "left"
+        else ("right" if i % 2 == 0 else "left")
+        for i in range(expected_steps)
+    ]
+
+    l_idx, r_idx = 0, 0
+    step_frames: List[int] = []
+    step_feet: List[str] = []
+    last_frame = start_frame - 1
+
+    for foot in foot_order:
+        min_next_frame = last_frame + max(1, min_alt_step_spacing_frames)
+        if foot == "left":
+            while l_idx < len(l_peaks) and l_peaks[l_idx] < min_next_frame:
+                l_idx += 1
+            if l_idx < len(l_peaks):
+                step_frames.append(l_peaks[l_idx])
+                step_feet.append("left")
+                last_frame = l_peaks[l_idx]
+                l_idx += 1
+        else:
+            while r_idx < len(r_peaks) and r_peaks[r_idx] < min_next_frame:
+                r_idx += 1
+            if r_idx < len(r_peaks):
+                step_frames.append(r_peaks[r_idx])
+                step_feet.append("right")
+                last_frame = r_peaks[r_idx]
+                r_idx += 1
+
+    return step_frames, step_feet
 
 
 def line_residual_ratio(xs: List[float], frames: List[int], scale: float) -> Optional[float]:
@@ -153,11 +229,30 @@ def main() -> None:
     parser.add_argument("--hold-dist-ratio", type=float, default=0.30)
     parser.add_argument("--pause-speed-thresh", type=float, default=12.0)
     parser.add_argument("--min-pause-frames", type=int, default=6)
-    parser.add_argument("--step-speed-thresh", type=float, default=35.0)
+    parser.add_argument("--step-speed-thresh", type=float, default=10.0,
+                        help="Floor for the adaptive per-ankle step speed threshold (px/frame).")
+    parser.add_argument("--step-speed-k", type=float, default=3.5,
+                        help="k in median+k*1.4826*MAD used to compute the adaptive threshold "
+                             "per ankle. k=3.5 is ~35 px/frame for a typical behind-lane 60fps camera.")
     parser.add_argument("--min-step-gap-frames", type=int, default=26)
+    parser.add_argument(
+        "--min-alt-step-spacing-frames",
+        type=int,
+        default=6,
+        help=(
+            "Minimum spacing between consecutive alternating steps (default: 6). "
+            "Higher values reduce double-counts but may undercount bowlers who take very short steps."
+        ),
+    )
+    parser.add_argument("--bowler-hand", default="right", choices=["right", "left"],
+                        help="Dominant hand of the bowler. right -> L-R-L-R-L steps; "
+                             "left -> R-L-R-L-R steps (default: right).")
     parser.add_argument("--expected-steps", type=int, default=5)
     parser.add_argument("--return-window-frames", type=int, default=45)
+    parser.add_argument("--start-frame", type=int, default=0)
+    parser.add_argument("--end-frame", type=int, default=-1)
     parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--no-video", action="store_true", help="Skip writing annotated output video (faster stats-only run).")
     args = parser.parse_args()
 
     source = Path(args.source)
@@ -174,7 +269,9 @@ def main() -> None:
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    writer = None
+    if not args.no_video:
+        writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
 
     pose_model = YOLO(args.pose_model)
     detect_model = YOLO(args.detect_model)
@@ -184,11 +281,18 @@ def main() -> None:
     prev_center = None
     prev_wrist = None
     prev_foot = None
+    prev_l_ankle: Optional[Tuple[float, float]] = None
+    prev_r_ankle: Optional[Tuple[float, float]] = None
     pickup_frame = None
 
     while True:
         ok, frame = cap.read()
         if not ok:
+            break
+        if frame_idx < args.start_frame:
+            frame_idx += 1
+            continue
+        if args.end_frame >= 0 and frame_idx > args.end_frame:
             break
         if args.max_frames > 0 and frame_idx >= args.max_frames:
             break
@@ -290,6 +394,16 @@ def main() -> None:
             foot_speed = dist(foot, prev_foot)
         prev_foot = foot
 
+        l_ankle_speed = None
+        if l_ankle is not None and prev_l_ankle is not None:
+            l_ankle_speed = dist(l_ankle, prev_l_ankle)
+        prev_l_ankle = l_ankle
+
+        r_ankle_speed = None
+        if r_ankle is not None and prev_r_ankle is not None:
+            r_ankle_speed = dist(r_ankle, prev_r_ankle)
+        prev_r_ankle = r_ankle
+
         wrist_offset = None
         wrist_offset_ratio = None
         if r_wrist is not None and body_mid_x is not None:
@@ -325,6 +439,8 @@ def main() -> None:
                 "right_ankle": r_ankle,
                 "foot_point": foot,
                 "foot_speed": foot_speed,
+                "left_ankle_speed": l_ankle_speed,
+                "right_ankle_speed": r_ankle_speed,
                 "right_wrist": r_wrist,
                 "ball_center": ball_center,
                 "body_mid_x": body_mid_x,
@@ -336,11 +452,13 @@ def main() -> None:
             }
         )
 
-        writer.write(frame)
+        if writer is not None:
+            writer.write(frame)
         frame_idx += 1
 
     cap.release()
-    writer.release()
+    if writer is not None:
+        writer.release()
 
     # Phase 1: start of process is ball pickup.
     search_start = pickup_frame if pickup_frame is not None else 0
@@ -353,13 +471,31 @@ def main() -> None:
         start_frame=search_start,
     )
 
-    # Phase 3: approach starts after pause; steps are foot-motion peaks only.
+    # Phase 3: approach starts after pause; steps are per-ankle alternating peaks.
     return_start = pause_end + 1 if pause_end is not None else None
     return_end = len(rows) - 1 if return_start is not None else None
 
     step_frames: List[int] = []
+    step_feet: List[str] = []
+    effective_l_thresh = args.step_speed_thresh
+    effective_r_thresh = args.step_speed_thresh
+    first_foot = "left" if args.bowler_hand == "right" else "right"
     if return_start is not None:
-        step_frames = detect_step_frames(rows, return_start, args.step_speed_thresh, args.min_step_gap_frames)
+        effective_l_thresh = _mad_thresh(
+            rows, return_start, "left_ankle_speed", floor=args.step_speed_thresh, k=args.step_speed_k
+        )
+        effective_r_thresh = _mad_thresh(
+            rows, return_start, "right_ankle_speed", floor=args.step_speed_thresh, k=args.step_speed_k
+        )
+        step_frames, step_feet = detect_steps_alternating(
+            rows, return_start,
+            l_thresh=effective_l_thresh,
+            r_thresh=effective_r_thresh,
+            min_gap_frames=args.min_step_gap_frames,
+            min_alt_step_spacing_frames=args.min_alt_step_spacing_frames,
+            first_foot=first_foot,
+            expected_steps=args.expected_steps,
+        )
 
     pause_rows: List[Dict] = []
     if pause_start is not None and pause_end is not None:
@@ -414,10 +550,17 @@ def main() -> None:
 
     step_count = len(step_frames)
     step_count_ok = step_count == args.expected_steps
-    wrist_on_third_step = first_wrist_step_index is not None and abs(first_wrist_step_index - 3) <= 1
+    step_intervals = [step_frames[i] - step_frames[i - 1] for i in range(1, len(step_frames))]
 
     summary = {
         "frames": len(rows),
+        "bowler_hand": args.bowler_hand,
+        "step_sequence": "L-R-L-R-L" if args.bowler_hand == "right" else "R-L-R-L-R",
+        "camera_assumption": (
+            "For right-handed bowlers, place camera behind and to the right. "
+            "For left-handed bowlers, place camera behind and to the left. "
+            "Changing camera angle can shift wrist visibility timing and step-phase interpretation."
+        ),
         "pickup_frame": pickup_frame,
         "pause_start": pause_start,
         "pause_end": pause_end,
@@ -425,14 +568,24 @@ def main() -> None:
         "approach_start": return_start,
         "approach_end": return_end,
         "detected_step_frames": step_frames,
+        "detected_step_feet": step_feet,
         "detected_step_count": step_count,
+        "detected_step_intervals": step_intervals,
         "expected_step_count": args.expected_steps,
         "step_count_ok": step_count_ok,
+        "min_alt_step_spacing_frames": args.min_alt_step_spacing_frames,
+        "step_spacing_warning": (
+            "Minimum inter-step spacing is enforced. This can undercount bowlers with very short steps; "
+            "reduce --min-alt-step-spacing-frames if steps are getting dropped."
+            if args.min_alt_step_spacing_frames > 0
+            else None
+        ),
+        "effective_l_ankle_thresh": round(effective_l_thresh, 2),
+        "effective_r_ankle_thresh": round(effective_r_thresh, 2),
         "left_ankle_straightness_ratio": ankle_straightness_ratio,
         "left_ankle_straight": ankle_is_straight,
         "first_wrist_frame_in_approach": first_wrist_frame,
         "first_wrist_step_index": first_wrist_step_index,
-        "wrist_appears_around_step3": wrist_on_third_step,
         "right_hand_lateral_range_ratio": hand_lateral_range,
         "right_hand_control_ok": hand_control_ok,
     }
@@ -443,16 +596,24 @@ def main() -> None:
         json.dump({"summary": summary, "frames": rows}, f, indent=2)
 
     print(f"frames={summary['frames']}")
+    print(f"bowler_hand={summary['bowler_hand']} ({summary['step_sequence']})")
+    print(f"camera_assumption={summary['camera_assumption']}")
     print(f"pickup_frame={summary['pickup_frame']}")
     print(f"pause_start={summary['pause_start']}")
     print(f"pause_end={summary['pause_end']}")
     print(f"approach_start={summary['approach_start']}")
     print(f"detected_step_count={summary['detected_step_count']}")
+    print(f"detected_steps={list(zip(summary['detected_step_frames'], summary['detected_step_feet']))}")
+    print(f"detected_step_intervals={summary['detected_step_intervals']}")
     print(f"step_count_ok={summary['step_count_ok']}")
+    print(f"min_alt_step_spacing_frames={summary['min_alt_step_spacing_frames']}")
+    if summary["step_spacing_warning"] is not None:
+        print(f"step_spacing_warning={summary['step_spacing_warning']}")
+    print(f"effective_l_ankle_thresh={summary['effective_l_ankle_thresh']}")
+    print(f"effective_r_ankle_thresh={summary['effective_r_ankle_thresh']}")
     print(f"left_ankle_straightness_ratio={summary['left_ankle_straightness_ratio']}")
     print(f"left_ankle_straight={summary['left_ankle_straight']}")
     print(f"first_wrist_step_index={summary['first_wrist_step_index']}")
-    print(f"wrist_appears_around_step3={summary['wrist_appears_around_step3']}")
     print(f"right_hand_lateral_range_ratio={summary['right_hand_lateral_range_ratio']}")
     print(f"right_hand_control_ok={summary['right_hand_control_ok']}")
     print(f"output={out_path}")

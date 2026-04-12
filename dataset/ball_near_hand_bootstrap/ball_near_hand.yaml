@@ -1,0 +1,6 @@
+path: F:/development/Bowling-MCP/dataset/ball_near_hand_bootstrap
+train: images/train
+val: images/val
+
+names:
+  0: bowling_ball
