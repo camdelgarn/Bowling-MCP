@@ -1,8 +1,0 @@
-{
-  "job_id": "bf53f55f-f42b-4aca-8859-79d7dbfcfc42",
-  "elapsed_s": 0.004975080490112305,
-  "result": {
-    "status": "error",
-    "error": "[WinError 2] The system cannot find the file specified"
-  }
-}
