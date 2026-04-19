@@ -218,12 +218,16 @@ def main() -> None:
     parser.add_argument("--source", required=True)
     parser.add_argument("--pose-model", default="yolov8n-pose.pt")
     parser.add_argument("--detect-model", default="yolov8n.pt")
+    parser.add_argument("--ball-model", default=None,
+                        help="Path to custom ball detector weights (e.g. yolo/runs/ball_near_hand_v1/weights/best.pt). "
+                             "If omitted, falls back to COCO sports-ball class from --detect-model.")
     parser.add_argument("--output", required=True)
     parser.add_argument("--stats", required=True)
     parser.add_argument("--device", default="0")
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--pose-conf", type=float, default=0.35)
-    parser.add_argument("--ball-conf", type=float, default=0.05)
+    parser.add_argument("--ball-conf", type=float, default=0.25,
+                        help="Confidence threshold for ball detection (default 0.25 for custom model; use 0.05 for COCO fallback).")
     parser.add_argument("--iou", type=float, default=0.4)
     parser.add_argument("--kp-conf", type=float, default=0.2)
     parser.add_argument("--hold-dist-ratio", type=float, default=0.30)
@@ -275,6 +279,12 @@ def main() -> None:
 
     pose_model = YOLO(args.pose_model)
     detect_model = YOLO(args.detect_model)
+    if args.ball_model:
+        ball_model = YOLO(args.ball_model)
+        _ball_use_custom = True
+    else:
+        ball_model = detect_model
+        _ball_use_custom = False
 
     rows: List[Dict] = []
     frame_idx = 0
@@ -306,9 +316,9 @@ def main() -> None:
             device=args.device,
             verbose=False,
         )[0]
-        det = detect_model.predict(
+        det = ball_model.predict(
             source=frame,
-            classes=[SPORTS_BALL],
+            classes=None if _ball_use_custom else [SPORTS_BALL],
             conf=args.ball_conf,
             iou=args.iou,
             imgsz=args.imgsz,
@@ -552,6 +562,110 @@ def main() -> None:
     step_count_ok = step_count == args.expected_steps
     step_intervals = [step_frames[i] - step_frames[i - 1] for i in range(1, len(step_frames))]
 
+    # Wrist-vs-ball relationship analysis.
+    pickup_for_analysis = pickup_frame if pickup_frame is not None else 0
+    wb_rows = []
+    for r in rows:
+        if r["frame"] < pickup_for_analysis:
+            continue
+        if r["right_wrist"] is None or r["ball_center"] is None or r["person_width"] is None:
+            continue
+        wrist_x = float(r["right_wrist"][0])
+        ball_x = float(r["ball_center"][0])
+        ball_y = float(r["ball_center"][1])
+        body_mid_x = float(r["body_mid_x"]) if r["body_mid_x"] is not None else None
+        person_w = float(max(1.0, r["person_width"]))
+        wb_rows.append(
+            {
+                "frame": int(r["frame"]),
+                "wrist_x": wrist_x,
+                "ball_x": ball_x,
+                "ball_y": ball_y,
+                "body_mid_x": body_mid_x,
+                "person_w": person_w,
+                "rel_x": wrist_x - ball_x,
+            }
+        )
+
+    backswing_top_frame = None
+    backswing_samples = 0
+    backswing_wrist_behind_ratio = None
+    backswing_wrist_stays_behind = None
+    wrist_moves_right_frame = None
+    wrist_already_right_at_analysis_start = None
+    ball_returns_to_body_frame = None
+    ball_returns_to_body_confident = None
+    wrist_right_timing_frames_vs_body_return = None
+    wrist_right_timing_seconds_vs_body_return = None
+    wrist_right_before_body_return = None
+
+    if wb_rows:
+        # Top of backswing: highest ball point in image (smallest y) after pickup.
+        top_row = min(wb_rows, key=lambda rr: rr["ball_y"])
+        backswing_top_frame = int(top_row["frame"])
+
+        backswing_rows = [rr for rr in wb_rows if rr["frame"] <= backswing_top_frame]
+        backswing_samples = len(backswing_rows)
+        if backswing_rows:
+            behind_count = 0
+            for rr in backswing_rows:
+                # Wrist is considered "behind/not yet around-right" when not clearly right of ball.
+                behind_thresh_px = 0.03 * rr["person_w"]
+                if rr["rel_x"] <= behind_thresh_px:
+                    behind_count += 1
+            backswing_wrist_behind_ratio = behind_count / max(1, backswing_samples)
+            backswing_wrist_stays_behind = backswing_wrist_behind_ratio >= 0.80
+
+        # First frame wrist clearly moves to right of ball.
+        prev_rel = None
+        prev_thresh = None
+        first_right_frame = None
+        for rr in wb_rows:
+            right_thresh_px = 0.04 * rr["person_w"]
+            rel_x = rr["rel_x"]
+            if first_right_frame is None and rel_x > right_thresh_px:
+                first_right_frame = int(rr["frame"])
+            if prev_rel is not None and prev_thresh is not None:
+                if prev_rel <= prev_thresh and rel_x > right_thresh_px:
+                    wrist_moves_right_frame = int(rr["frame"])
+                    break
+            prev_rel = rel_x
+            prev_thresh = right_thresh_px
+
+        if wrist_moves_right_frame is None and first_right_frame is not None:
+            wrist_moves_right_frame = first_right_frame
+            wrist_already_right_at_analysis_start = True
+        elif wrist_moves_right_frame is not None:
+            wrist_already_right_at_analysis_start = False
+
+        # Ball return-to-body event: ball center reaches near body midline after backswing top.
+        closest_body_row = None
+        closest_body_ratio = None
+        for rr in wb_rows:
+            if rr["frame"] < backswing_top_frame:
+                continue
+            if rr["body_mid_x"] is None:
+                continue
+            body_dist_ratio = abs(rr["ball_x"] - rr["body_mid_x"]) / rr["person_w"]
+            if closest_body_ratio is None or body_dist_ratio < closest_body_ratio:
+                closest_body_ratio = body_dist_ratio
+                closest_body_row = rr
+
+            body_thresh_px = 0.12 * rr["person_w"]
+            if abs(rr["ball_x"] - rr["body_mid_x"]) <= body_thresh_px:
+                ball_returns_to_body_frame = int(rr["frame"])
+                ball_returns_to_body_confident = True
+                break
+
+        if ball_returns_to_body_frame is None and closest_body_row is not None:
+            ball_returns_to_body_frame = int(closest_body_row["frame"])
+            ball_returns_to_body_confident = False
+
+        if wrist_moves_right_frame is not None and ball_returns_to_body_frame is not None:
+            wrist_right_timing_frames_vs_body_return = wrist_moves_right_frame - ball_returns_to_body_frame
+            wrist_right_timing_seconds_vs_body_return = wrist_right_timing_frames_vs_body_return / max(1e-6, float(fps))
+            wrist_right_before_body_return = wrist_right_timing_frames_vs_body_return < 0
+
     summary = {
         "frames": len(rows),
         "bowler_hand": args.bowler_hand,
@@ -588,6 +702,17 @@ def main() -> None:
         "first_wrist_step_index": first_wrist_step_index,
         "right_hand_lateral_range_ratio": hand_lateral_range,
         "right_hand_control_ok": hand_control_ok,
+        "backswing_top_frame": backswing_top_frame,
+        "backswing_samples": backswing_samples,
+        "backswing_wrist_behind_ratio": backswing_wrist_behind_ratio,
+        "backswing_wrist_stays_behind": backswing_wrist_stays_behind,
+        "wrist_moves_right_around_ball_frame": wrist_moves_right_frame,
+        "wrist_already_right_at_analysis_start": wrist_already_right_at_analysis_start,
+        "ball_returns_to_body_frame": ball_returns_to_body_frame,
+        "ball_returns_to_body_confident": ball_returns_to_body_confident,
+        "wrist_right_before_body_return": wrist_right_before_body_return,
+        "wrist_right_timing_frames_vs_body_return": wrist_right_timing_frames_vs_body_return,
+        "wrist_right_timing_seconds_vs_body_return": wrist_right_timing_seconds_vs_body_return,
     }
 
     stats_path = Path(args.stats)
@@ -616,7 +741,20 @@ def main() -> None:
     print(f"first_wrist_step_index={summary['first_wrist_step_index']}")
     print(f"right_hand_lateral_range_ratio={summary['right_hand_lateral_range_ratio']}")
     print(f"right_hand_control_ok={summary['right_hand_control_ok']}")
-    print(f"output={out_path}")
+    print(f"backswing_top_frame={summary['backswing_top_frame']}")
+    print(f"backswing_wrist_stays_behind={summary['backswing_wrist_stays_behind']}")
+    print(f"backswing_wrist_behind_ratio={summary['backswing_wrist_behind_ratio']}")
+    print(f"wrist_moves_right_around_ball_frame={summary['wrist_moves_right_around_ball_frame']}")
+    print(f"wrist_already_right_at_analysis_start={summary['wrist_already_right_at_analysis_start']}")
+    print(f"ball_returns_to_body_frame={summary['ball_returns_to_body_frame']}")
+    print(f"ball_returns_to_body_confident={summary['ball_returns_to_body_confident']}")
+    print(f"wrist_right_before_body_return={summary['wrist_right_before_body_return']}")
+    print(f"wrist_right_timing_frames_vs_body_return={summary['wrist_right_timing_frames_vs_body_return']}")
+    print(f"wrist_right_timing_seconds_vs_body_return={summary['wrist_right_timing_seconds_vs_body_return']}")
+    if args.no_video:
+        print("output=skipped (--no-video)")
+    else:
+        print(f"output={out_path}")
     print(f"stats={stats_path}")
 
 
