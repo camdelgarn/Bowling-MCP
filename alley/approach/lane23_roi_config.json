@@ -1,0 +1,9 @@
+{
+  "video": "C:/video/behind/nobowler/lane23.MP4",
+  "roi": {
+    "left": 571,
+    "right": 978,
+    "top": 354,
+    "bottom": 759
+  }
+}
