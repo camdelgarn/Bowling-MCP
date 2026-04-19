@@ -1,0 +1,19 @@
+{
+  "streams": [
+    {
+      "label": "GoPro-1",
+      "stream_name": "gopro1",
+      "url": "rtmp://10.0.0.57:1935/live/gopro1"
+    },
+    {
+      "label": "GoPro-2",
+      "stream_name": "gopro2",
+      "url": "rtmp://10.0.0.57:1935/live/gopro2"
+    },
+    {
+      "label": "GoPro-3",
+      "stream_name": "gopro3",
+      "url": "rtmp://10.0.0.57:1935/live/gopro3"
+    }
+  ]
+}

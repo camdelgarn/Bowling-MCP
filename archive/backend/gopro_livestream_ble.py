@@ -106,7 +106,22 @@ def patch_gopro_no_wifi_disconnect(gopro: WirelessGoPro):
     """Prevent the SDK from disconnecting the host PC's WiFi on exit."""
     async def _noop_close_wifi() -> None:
         logging.getLogger(__name__).info("Skipping host WiFi disconnect (BLE-only mode)")
-    gopro._close_wifi = _noop_close_wifi
+
+    patched = []
+    for attr in ("_close_wifi", "_close_wifi_ap", "_disconnect_wifi"):
+        if hasattr(gopro, attr):
+            setattr(gopro, attr, _noop_close_wifi)
+            patched.append(attr)
+
+    if patched:
+        logging.getLogger(__name__).info(
+            "Applied host WiFi disconnect patch on: %s", ", ".join(patched)
+        )
+    else:
+        logging.getLogger(__name__).warning(
+            "No known WiFi teardown hooks found on WirelessGoPro; "
+            "host WiFi may still be affected during BLE disconnect."
+        )
 
 
 async def scan_gopros():

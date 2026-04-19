@@ -39,3 +39,7 @@ detailed.log
 
 # YOLO generated outputs
 yolo/outputs/
+
+# Any output directories anywhere in the repo
+**/output/
+**/outputs/
